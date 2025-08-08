@@ -1,6 +1,6 @@
 # This code is part of a Qiskit project.
 #
-# (C) Copyright IBM 2018, 2025.
+# (C) Copyright IBM 2018, 2024.
 #
 # This code is licensed under the Apache License, Version 2.0. You may
 # obtain a copy of this license in the LICENSE.txt file in the root directory
@@ -13,17 +13,16 @@
 """The Iterative Quantum Amplitude Estimation Algorithm."""
 
 from __future__ import annotations
-from typing import cast, Callable, Tuple, Any
+from typing import cast, Callable, Tuple
 import warnings
 import numpy as np
 from scipy.stats import beta
 
 from qiskit import ClassicalRegister, QuantumCircuit
-from qiskit.primitives import BaseSamplerV2, StatevectorSampler
+from qiskit.primitives import BaseSampler, Sampler
 
 from .amplitude_estimator import AmplitudeEstimator, AmplitudeEstimatorResult
 from .estimation_problem import EstimationProblem
-from ..custom_types import Transpiler
 from ..exceptions import AlgorithmError
 
 
@@ -55,10 +54,7 @@ class IterativeAmplitudeEstimation(AmplitudeEstimator):
         alpha: float,
         confint_method: str = "beta",
         min_ratio: float = 2,
-        sampler: BaseSamplerV2 | None = None,
-        *,
-        transpiler: Transpiler | None = None,
-        transpiler_options: dict[str, Any] | None = None,
+        sampler: BaseSampler | None = None,
     ) -> None:
         r"""
         The output of the algorithm is an estimate for the amplitude `a`, that with at least
@@ -73,10 +69,6 @@ class IterativeAmplitudeEstimation(AmplitudeEstimator):
                 Clopper-Pearson intervals (default)
             min_ratio: Minimal q-ratio (:math:`K_{i+1} / K_i`) for FindNextK
             sampler: A sampler primitive to evaluate the circuits.
-            transpiler: An optional object with a `run` method allowing to transpile the circuits
-                that are produced within this algorithm. If set to `None`, these won't be transpiled.
-            transpiler_options: A dictionary of options to be passed to the transpiler's `run`
-                method as keyword arguments.
 
         Raises:
             AlgorithmError: if the method to compute the confidence intervals is not supported
@@ -104,11 +96,9 @@ class IterativeAmplitudeEstimation(AmplitudeEstimator):
         self._min_ratio = min_ratio
         self._confint_method = confint_method
         self._sampler = sampler
-        self._transpiler = transpiler
-        self._transpiler_options = transpiler_options if transpiler_options is not None else {}
 
     @property
-    def sampler(self) -> BaseSamplerV2 | None:
+    def sampler(self) -> BaseSampler | None:
         """Get the sampler primitive.
 
         Returns:
@@ -117,7 +107,7 @@ class IterativeAmplitudeEstimation(AmplitudeEstimator):
         return self._sampler
 
     @sampler.setter
-    def sampler(self, sampler: BaseSamplerV2) -> None:
+    def sampler(self, sampler: BaseSampler) -> None:
         """Set sampler primitive.
 
         Args:
@@ -241,9 +231,6 @@ class IterativeAmplitudeEstimation(AmplitudeEstimator):
             circuit.barrier()
             circuit.measure(estimation_problem.objective_qubits, c[:])
 
-        if self._transpiler is not None:
-            circuit = self._transpiler.run(circuit, **self._transpiler_options)
-
         return circuit
 
     def _good_state_probability(
@@ -284,10 +271,8 @@ class IterativeAmplitudeEstimation(AmplitudeEstimator):
             AlgorithmError: Sampler job run error.
         """
         if self._sampler is None:
-            warnings.warn(
-                "No sampler provided, defaulting to StatevectorSampler from qiskit.primitives"
-            )
-            self._sampler = StatevectorSampler()
+            warnings.warn("No sampler provided, defaulting to Sampler from qiskit.primitives")
+            self._sampler = Sampler()
 
         # initialize memory variables
         powers = [0]  # list of powers k: Q^k, (called 'k' in paper)
@@ -322,17 +307,43 @@ class IterativeAmplitudeEstimation(AmplitudeEstimator):
 
             # run measurements for Q^k A|0> circuit
             circuit = self.construct_circuit(estimation_problem, k, measurement=True)
+            counts = {}
 
             try:
-                job = self._sampler.run([(circuit,)])
-                ret = job.result()[0]
+                job = self._sampler.run([circuit])
+                ret = job.result()
             except Exception as exc:
                 raise AlgorithmError("The job was not completed successfully. ") from exc
 
-            circuit_results = getattr(ret.data, next(iter(ret.data.keys())))
-            shots = ret.metadata["shots"]
+            shots = ret.metadata[0].get("shots")
+            if shots is None:
+                circuit = self.construct_circuit(estimation_problem, k=0, measurement=True)
+                try:
+                    job = self._sampler.run([circuit])
+                    ret = job.result()
+                except Exception as exc:
+                    raise AlgorithmError("The job was not completed successfully. ") from exc
 
-            counts = circuit_results.get_counts()
+                # calculate the probability of measuring '1'
+                prob = 0.0
+                for bit, probabilities in ret.quasi_dists[0].binary_probabilities().items():
+                    # check if it is a good state
+                    if estimation_problem.is_good_state(bit):
+                        prob += probabilities
+
+                a_confidence_interval = [prob, prob]
+                a_intervals.append(a_confidence_interval)
+
+                theta_i_interval = [
+                    np.arccos(1 - 2 * a_i) / 2 / np.pi for a_i in a_confidence_interval
+                ]
+                theta_intervals.append(theta_i_interval)
+                num_oracle_queries = 0  # no Q-oracle call, only a single one to A
+                break
+
+            counts = {
+                k: round(v * shots) for k, v in ret.quasi_dists[0].binary_probabilities().items()
+            }
 
             # calculate the probability of measuring '1', 'prob' is a_i in the paper
             one_counts, prob = self._good_state_probability(estimation_problem, counts)

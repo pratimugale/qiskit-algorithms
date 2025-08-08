@@ -1,6 +1,6 @@
 # This code is part of a Qiskit project.
 #
-# (C) Copyright IBM 2022, 2025.
+# (C) Copyright IBM 2022, 2023.
 #
 # This code is licensed under the Apache License, Version 2.0. You may
 # obtain a copy of this license in the LICENSE.txt file in the root directory
@@ -10,7 +10,6 @@
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
 
-
 """Utilities for p-VQD."""
 from __future__ import annotations
 import logging
@@ -19,9 +18,9 @@ from collections.abc import Callable
 import numpy as np
 
 from qiskit.circuit import QuantumCircuit, Parameter, ParameterExpression
-from qiskit.compiler import transpile
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager # change: transpile is deprecated to generate_preset_pass_manager
 from qiskit.exceptions import QiskitError
-from qiskit.primitives import BaseEstimatorV2
+from qiskit.primitives import BaseEstimatorV2 # change: BaseEstimator is migrated to BaseEstimatorV2
 from qiskit.quantum_info.operators.base_operator import BaseOperator
 
 from qiskit_algorithms.gradients import ParamShiftSamplerGradient as ParamShift
@@ -30,13 +29,13 @@ from ...exceptions import AlgorithmError
 
 logger = logging.getLogger(__name__)
 
-
 def _is_gradient_supported(ansatz: QuantumCircuit) -> bool:
     """Check whether we can apply a simple parameter shift rule to obtain gradients."""
 
     # check whether the circuit can be unrolled to supported gates
     try:
-        unrolled = transpile(ansatz, basis_gates=ParamShift.SUPPORTED_GATES, optimization_level=0)
+        pm = generate_preset_pass_manager(basis_gates=ParamShift.SUPPORTED_GATES, optimization_level=0) # change: transpile is replaced with generate_preset_pass_manager
+        unrolled = pm.run(ansatz) # change: transpile is replaced with pm.run
     except QiskitError:
         # failed to map to supported basis
         logger.log(
@@ -71,11 +70,10 @@ def _is_gradient_supported(ansatz: QuantumCircuit) -> bool:
 
     return True
 
-
 def _get_observable_evaluator(
     ansatz: QuantumCircuit,
     observables: BaseOperator | list[BaseOperator],
-    estimator: BaseEstimatorV2,
+    estimator: BaseEstimatorV2, # change: BaseEstimator is replaced with BaseEstimatorV2
 ) -> Callable[[np.ndarray], float | list[float]]:
     """Get a callable to evaluate a (list of) observable(s) for given circuit parameters."""
 
@@ -91,10 +89,18 @@ def _get_observable_evaluator(
         Raises:
             AlgorithmError: If a primitive job fails.
         """
+        if isinstance(observables, list):
+            num_observables = len(observables)
+            obs = observables
+        else:
+            num_observables = 1
+            obs = [observables]
+        states = [ansatz] * num_observables
+        parameter_values = [theta] * num_observables
 
         try:
-            estimator_job = estimator.run([(ansatz, observables, theta)])
-            results = estimator_job.result()[0].data.evs
+            estimator_job = estimator.run(states, obs, parameter_values=parameter_values) # verify: confirm run method parameters for BaseEstimatorV2
+            results = estimator_job.result().values
         except Exception as exc:
             raise AlgorithmError("The primitive job failed!") from exc
 

@@ -1,6 +1,6 @@
 # This code is part of a Qiskit project.
 #
-# (C) Copyright IBM 2022, 2025.
+# (C) Copyright IBM 2022, 2023
 #
 # This code is licensed under the Apache License, Version 2.0. You may
 # obtain a copy of this license in the LICENSE.txt file in the root directory
@@ -17,12 +17,15 @@ from __future__ import annotations
 
 from abc import ABC
 from collections.abc import Sequence
+from copy import copy
 
 from qiskit.circuit import Parameter, QuantumCircuit
+from qiskit.providers import Options
 
 from .base.base_qgt import BaseQGT
 from .lin_comb.lin_comb_estimator_gradient import DerivativeType
 from .qfi_result import QFIResult
+
 from ..algorithm_job import AlgorithmJob
 from ..exceptions import AlgorithmError
 
@@ -40,24 +43,26 @@ class QFI(ABC):
     def __init__(
         self,
         qgt: BaseQGT,
-        precision: float | None = None,
+        options: Options | None = None,
     ):
         r"""
         Args:
             qgt: The quantum geometric tensor used to compute the QFI.
-            precision: Precision to override the BaseQGT's. If None, the BaseQGT's precision will
-                be used.
+            options: Backend runtime options used for circuit execution. The order of priority is:
+                options in ``run`` method > QFI's default options > primitive's default
+                setting. Higher priority setting overrides lower priority setting.
         """
         self._qgt: BaseQGT = qgt
-        self._precision = precision
+        self._default_options = Options()
+        if options is not None:
+            self._default_options.update_options(**options)
 
     def run(
         self,
         circuits: Sequence[QuantumCircuit],
         parameter_values: Sequence[Sequence[float]],
         parameters: Sequence[Sequence[Parameter] | None] | None = None,
-        *,
-        precision: float | Sequence[float] | None = None,
+        **options,
     ) -> AlgorithmJob:
         """Run the job of the QFIs on the given circuits.
 
@@ -68,11 +73,10 @@ class QFI(ABC):
                 the specified parameters. Each sequence of parameters corresponds to a circuit in
                 ``circuits``. Defaults to None, which means that the QFIs of all parameters in
                 each circuit are calculated.
-            precision: Precision to be used by the underlying Estimator. If a single float is
-                provided, this number will be used for all circuits. If a sequence of floats is
-                provided, they will be used on a per-circuit basis. If not set, the gradient's default
-                precision will be used for all circuits, and if that is None (not set) then the
-                underlying primitive's (default) precision will be used for all circuits.
+            options: Primitive backend runtime options used for circuit execution.
+                The order of priority is: options in ``run`` method > QFI's
+                default options > QGT's default setting.
+                Higher priority setting overrides lower priority setting.
 
         Returns:
             The job object of the QFIs of the expectation values. The i-th result corresponds to
@@ -94,12 +98,12 @@ class QFI(ABC):
                 params if params is not None else circuits[i].parameters
                 for i, params in enumerate(parameters)
             ]
-
-        if precision is None:
-            precision = self.precision  # May still be None
-
-        job = AlgorithmJob(self._run, circuits, parameter_values, parameters, precision=precision)
-        job._submit()
+        # The priority of run option is as follows:
+        # options in ``run`` method > QFI's default options > QGT's default setting.
+        opts = copy(self._default_options)
+        opts.update_options(**options)
+        job = AlgorithmJob(self._run, circuits, parameter_values, parameters, **opts.__dict__)
+        job.submit()
         return job
 
     def _run(
@@ -107,8 +111,7 @@ class QFI(ABC):
         circuits: Sequence[QuantumCircuit],
         parameter_values: Sequence[Sequence[float]],
         parameters: Sequence[Sequence[Parameter]],
-        *,
-        precision: float | Sequence[float] | None,
+        **options,
     ) -> QFIResult:
         """Compute the QFI on the given circuits."""
         # Set the derivative type to real
@@ -116,8 +119,7 @@ class QFI(ABC):
             self._qgt.derivative_type,
             DerivativeType.REAL,
         )
-
-        job = self._qgt.run(circuits, parameter_values, parameters, precision=precision)
+        job = self._qgt.run(circuits, parameter_values, parameters, **options)
 
         try:
             result = job.result()
@@ -129,25 +131,41 @@ class QFI(ABC):
         return QFIResult(
             qfis=[4 * qgt.real for qgt in result.qgts],
             metadata=result.metadata,
-            precision=result.precision,
+            options=result.options,
         )
 
     @property
-    def precision(self) -> float | None:
-        """Return the precision used by the `run` method of the BaseQGT's Estimator primitive. If
-        None, the default precision of the primitive is used.
+    def options(self) -> Options:
+        """Return the union of QGT's options setting and QFI's default options,
+        where, if the same field is set in both, the QFI's default options override
+        the QGT's default setting.
 
         Returns:
-            The default precision.
+            The QFI default + QGT options.
         """
-        return self._precision
+        return self._get_local_options(self._default_options.__dict__)
 
-    @precision.setter
-    def precision(self, precision: float | None):
-        """Update the QFI's default precision setting.
+    def update_default_options(self, **options):
+        """Update the gradient's default options setting.
 
         Args:
-            precision: The new default precision.
+            **options: The fields to update the default options.
         """
 
-        self._precision = precision
+        self._default_options.update_options(**options)
+
+    def _get_local_options(self, options: Options) -> Options:
+        """Return the union of the QFI default setting,
+        the QGT default options, and the options in the ``run`` method.
+        The order of priority is: options in ``run`` method > QFI's default options > QGT's
+        default setting.
+
+        Args:
+            options: The fields to update the options
+
+        Returns:
+            The QFI default + QGT default + run options.
+        """
+        opts = copy(self._qgt.options)
+        opts.update_options(**options)
+        return opts

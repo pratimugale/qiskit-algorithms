@@ -1,6 +1,6 @@
 # This code is part of a Qiskit project.
 #
-# (C) Copyright IBM 2020, 2025.
+# (C) Copyright IBM 2020, 2023.
 #
 # This code is licensed under the Apache License, Version 2.0. You may
 # obtain a copy of this license in the LICENSE.txt file in the root directory
@@ -15,20 +15,18 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import numpy
 import qiskit
 from qiskit import circuit
-from qiskit.circuit import QuantumCircuit, ClassicalRegister
-from qiskit.primitives import BaseSamplerV2
+from qiskit.circuit import QuantumCircuit
+from qiskit.circuit.classicalregister import ClassicalRegister
+from qiskit.primitives import BaseSampler
 from qiskit.result import Result
 
 from qiskit_algorithms.exceptions import AlgorithmError
 
 from .phase_estimation_result import PhaseEstimationResult, _sort_phases
 from .phase_estimator import PhaseEstimator
-from ..custom_types import Transpiler
 
 
 class PhaseEstimation(PhaseEstimator):
@@ -84,21 +82,13 @@ class PhaseEstimation(PhaseEstimator):
     def __init__(
         self,
         num_evaluation_qubits: int,
-        sampler: BaseSamplerV2 | None = None,
-        *,
-        transpiler: Transpiler | None = None,
-        transpiler_options: dict[str, Any] | None = None,
+        sampler: BaseSampler | None = None,
     ) -> None:
         r"""
         Args:
             num_evaluation_qubits: The number of qubits used in estimating the phase. The phase will
                 be estimated as a binary string with this many bits.
             sampler: The sampler primitive on which the circuit will be sampled.
-            transpiler: An optional object with a `run` method allowing to transpile the circuits
-                that are produced within this algorithm. If set to `None`, these won't be
-                transpiled.
-            transpiler_options: A dictionary of options to be passed to the transpiler's `run`
-                method as keyword arguments.
 
         Raises:
             AlgorithmError: If a sampler is not provided
@@ -111,8 +101,6 @@ class PhaseEstimation(PhaseEstimator):
             self._num_evaluation_qubits = num_evaluation_qubits
 
         self._sampler = sampler
-        self._transpiler = transpiler
-        self._transpiler_options = transpiler_options if transpiler_options is not None else {}
 
     def construct_circuit(
         self, unitary: QuantumCircuit, state_preparation: QuantumCircuit | None = None
@@ -201,9 +189,6 @@ class PhaseEstimation(PhaseEstimator):
             AlgorithmError: Primitive job failed.
         """
 
-        if self._transpiler is not None:
-            pe_circuit = self._transpiler.run(pe_circuit, **self._transpiler_options)
-
         self._add_measurement_if_required(pe_circuit)
 
         try:
@@ -211,13 +196,11 @@ class PhaseEstimation(PhaseEstimator):
             circuit_result = circuit_job.result()
         except Exception as exc:
             raise AlgorithmError("The primitive job failed!") from exc
-        phases = circuit_result[0].data.meas.get_counts()
-        # Ensure we still return the measurement strings in sorted order, which SamplerV2 doesn't
-        # guarantee
-        measurement_labels = sorted(phases.keys())
+        phases = circuit_result.quasi_dists[0]
         phases_bitstrings = {}
-        for key in measurement_labels:
-            phases_bitstrings[key[::-1]] = phases[key] / circuit_result[0].data.meas.num_shots
+        for key, phase in phases.items():
+            bitstring_key = self._get_reversed_bitstring(self._num_evaluation_qubits, key)
+            phases_bitstrings[bitstring_key] = phase
         phases = phases_bitstrings
 
         return PhaseEstimationResult(

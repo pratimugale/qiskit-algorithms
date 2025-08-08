@@ -1,6 +1,6 @@
 # This code is part of a Qiskit project.
 #
-# (C) Copyright IBM 2022, 2025.
+# (C) Copyright IBM 2022, 2023.
 #
 # This code is licensed under the Apache License, Version 2.0. You may
 # obtain a copy of this license in the LICENSE.txt file in the root directory
@@ -59,18 +59,13 @@ class ParamShiftSamplerGradient(BaseSamplerGradient):
         circuits: Sequence[QuantumCircuit],
         parameter_values: Sequence[Sequence[float]],
         parameters: Sequence[Sequence[Parameter]],
-        *,
-        shots: int | None,
+        **options,
     ) -> SamplerGradientResult:
         """Compute the estimator gradients on the given circuits."""
         g_circuits, g_parameter_values, g_parameters = self._preprocess(
             circuits, parameter_values, parameters, self.SUPPORTED_GATES
         )
-
-        if self._transpiler is not None:
-            g_circuits = self._transpiler.run(g_circuits, **self._transpiler_options)
-
-        results = self._run_unique(g_circuits, g_parameter_values, g_parameters, shots)
+        results = self._run_unique(g_circuits, g_parameter_values, g_parameters, **options)
         return self._postprocess(results, circuits, parameter_values, parameters)
 
     def _run_unique(
@@ -78,22 +73,12 @@ class ParamShiftSamplerGradient(BaseSamplerGradient):
         circuits: Sequence[QuantumCircuit],
         parameter_values: Sequence[Sequence[float]],
         parameters: Sequence[Sequence[Parameter]],
-        shots: int | None,
+        **options,
     ) -> SamplerGradientResult:
         """Compute the sampler gradients on the given circuits."""
-        metadata = []
+        job_circuits, job_param_values, metadata = [], [], []
         all_n = []
-        has_transformed_shots = False
-
-        if isinstance(shots, int) or shots is None:
-            shots = [shots] * len(circuits)
-            has_transformed_shots = True
-
-        pubs = []
-
-        for circuit, parameter_values_, parameters_, shots_ in zip(
-            circuits, parameter_values, parameters, shots
-        ):
+        for circuit, parameter_values_, parameters_ in zip(circuits, parameter_values, parameters):
             metadata.append({"parameters": parameters_})
             # Make parameter values for the parameter shift rule.
             param_shift_parameter_values = _make_param_shift_parameter_values(
@@ -101,11 +86,12 @@ class ParamShiftSamplerGradient(BaseSamplerGradient):
             )
             # Combine inputs into a single job to reduce overhead.
             n = len(param_shift_parameter_values)
-            pubs.append((circuit, param_shift_parameter_values, shots_))
+            job_circuits.extend([circuit] * n)
+            job_param_values.extend(param_shift_parameter_values)
             all_n.append(n)
 
         # Run the single job with all circuits.
-        job = self._sampler.run(pubs)
+        job = self._sampler.run(job_circuits, job_param_values, **options)
         try:
             results = job.result()
         except Exception as exc:
@@ -113,12 +99,10 @@ class ParamShiftSamplerGradient(BaseSamplerGradient):
 
         # Compute the gradients.
         gradients = []
-        for n, result_n in zip(all_n, results):
+        partial_sum_n = 0
+        for n in all_n:
             gradient = []
-            result = [
-                {label: value / res.num_shots for label, value in res.get_int_counts().items()}
-                for res in getattr(result_n.data, next(iter(result_n.data)))
-            ]
+            result = results.quasi_dists[partial_sum_n : partial_sum_n + n]
             for dist_plus, dist_minus in zip(result[: n // 2], result[n // 2 :]):
                 grad_dist: dict[int, float] = defaultdict(float)
                 for key, val in dist_plus.items():
@@ -126,17 +110,8 @@ class ParamShiftSamplerGradient(BaseSamplerGradient):
                 for key, val in dist_minus.items():
                     grad_dist[key] -= val / 2
                 gradient.append(dict(grad_dist))
-
             gradients.append(gradient)
+            partial_sum_n += n
 
-        if has_transformed_shots:
-            shots = shots[0]
-
-            if shots is None:
-                shots = results[0].metadata["shots"]
-        else:
-            for i, (shots_, result) in enumerate(zip(shots, results)):
-                if shots_ is None:
-                    shots[i] = result.metadata["shots"]
-
-        return SamplerGradientResult(gradients=gradients, metadata=metadata, shots=shots)
+        opt = self._get_local_options(options)
+        return SamplerGradientResult(gradients=gradients, metadata=metadata, options=opt)

@@ -1,6 +1,6 @@
 # This code is part of a Qiskit project.
 #
-# (C) Copyright IBM 2022, 2025.
+# (C) Copyright IBM 2022, 2023.
 #
 # This code is licensed under the Apache License, Version 2.0. You may
 # obtain a copy of this license in the LICENSE.txt file in the root directory
@@ -16,8 +16,10 @@ Fidelity result class
 from __future__ import annotations
 
 from collections.abc import Sequence, Mapping
-from dataclasses import dataclass
 from typing import Any
+from dataclasses import dataclass
+
+from qiskit.providers import Options
 
 
 @dataclass(frozen=True)
@@ -31,5 +33,5 @@ class StateFidelityResult:
     depending on the error mitigation method used."""
     metadata: Sequence[Mapping[str, Any]]
     """Additional information about the fidelity calculation."""
-    shots: int | Sequence[int]
-    """Primitive number of shots options for the execution of the fidelity job."""
+    options: Options
+    """Primitive runtime options for the execution of the fidelity job."""

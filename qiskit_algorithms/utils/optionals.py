@@ -1,6 +1,6 @@
 # This code is part of a Qiskit project.
 #
-# (C) Copyright IBM 2022, 2025.
+# (C) Copyright IBM 2022, 2023.
 #
 # This code is licensed under the Apache License, Version 2.0. You may
 # obtain a copy of this license in the LICENSE.txt file in the root directory
@@ -15,7 +15,7 @@ Additional optional constants.
 """
 
 from qiskit.utils import LazyImportTester
-from qiskit.version import get_version_info
+
 
 HAS_NLOPT = LazyImportTester("nlopt", name="NLopt Optimizer", install="pip install nlopt")
 HAS_SKQUANT = LazyImportTester(
@@ -24,7 +24,4 @@ HAS_SKQUANT = LazyImportTester(
     install="pip install scikit-quant",
 )
 HAS_SQSNOBFIT = LazyImportTester("SQSnobFit", install="pip install SQSnobFit")
-# From Qiskit 2.0.0 onward, tweedledum isn't required anymore to use the phase oracle
-CAN_USE_PHASE_ORACLE = get_version_info() >= "2.0.0" or LazyImportTester(
-    "tweedledum", install="pip install tweedledum"
-)
+HAS_TWEEDLEDUM = LazyImportTester("tweedledum", install="pip install tweedledum")

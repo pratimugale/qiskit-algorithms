@@ -1,6 +1,6 @@
 # This code is part of a Qiskit project.
 #
-# (C) Copyright IBM 2023, 2025.
+# (C) Copyright IBM 2023.
 #
 # This code is licensed under the Apache License, Version 2.0. You may
 # obtain a copy of this license in the LICENSE.txt file in the root directory
@@ -22,7 +22,7 @@ from numpy import real
 
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
-from qiskit.primitives import StatevectorEstimator
+from qiskit.primitives import StatevectorEstimator, BaseEstimatorV2 # change: Estimator is migrated to StatevectorEstimator and BaseEstimator is migrated to BaseEstimatorV2
 from qiskit.quantum_info import SparsePauliOp
 from qiskit.quantum_info.operators.base_operator import BaseOperator
 
@@ -36,8 +36,6 @@ from ....gradients import (
     LinCombQGT,
     LinCombEstimatorGradient,
 )
-from ....run_estimator_job import run_estimator_job
-
 
 class RealMcLachlanPrinciple(RealVariationalPrinciple):
     """Class for a Real McLachlan's Variational Principle. It aims to minimize the distance
@@ -71,7 +69,7 @@ class RealMcLachlanPrinciple(RealVariationalPrinciple):
                     "The provided gradient instance does not contain an estimator primitive."
                 ) from exc
         else:
-            estimator = StatevectorEstimator()
+            estimator = StatevectorEstimator() # change: Estimator is migrated to StatevectorEstimator
             gradient = LinCombEstimatorGradient(estimator, derivative_type=DerivativeType.IMAG)
 
         if qgt is None:
@@ -103,9 +101,12 @@ class RealMcLachlanPrinciple(RealVariationalPrinciple):
             AlgorithmError: If a gradient job fails.
         """
 
-        energy = run_estimator_job(self.gradient._estimator, [(ansatz, hamiltonian, param_values)])[
-            0
-        ].data.evs
+        try:
+            estimator_job = self.gradient._estimator.run([ansatz], [hamiltonian], [param_values]) # verify: confirm the usage of StatevectorEstimator
+            energy = estimator_job.result().values[0]
+        except Exception as exc:
+            raise AlgorithmError("The primitive job failed!") from exc
+
         modified_hamiltonian = self._construct_modified_hamiltonian(hamiltonian, real(energy))
 
         try:

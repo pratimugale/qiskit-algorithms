@@ -1,6 +1,6 @@
 # This code is part of a Qiskit project.
 #
-# (C) Copyright IBM 2022, 2025.
+# (C) Copyright IBM 2022, 2023.
 #
 # This code is licensed under the Apache License, Version 2.0. You may
 # obtain a copy of this license in the LICENSE.txt file in the root directory
@@ -60,22 +60,14 @@ class ParamShiftEstimatorGradient(BaseEstimatorGradient):
         observables: Sequence[BaseOperator],
         parameter_values: Sequence[Sequence[float]],
         parameters: Sequence[Sequence[Parameter]],
-        *,
-        precision: float | Sequence[float] | None,
+        **options,
     ) -> EstimatorGradientResult:
         """Compute the gradients of the expectation values by the parameter shift rule."""
         g_circuits, g_parameter_values, g_parameters = self._preprocess(
             circuits, parameter_values, parameters, self.SUPPORTED_GATES
         )
-
-        if self._transpiler is not None:
-            g_circuits = self._transpiler.run(g_circuits, **self._transpiler_options)
-            observables = [
-                obs.apply_layout(circuit.layout) for (circuit, obs) in zip(g_circuits, observables)
-            ]
-
         results = self._run_unique(
-            g_circuits, observables, g_parameter_values, g_parameters, precision=precision
+            g_circuits, observables, g_parameter_values, g_parameters, **options
         )
         return self._postprocess(results, circuits, parameter_values, parameters)
 
@@ -85,34 +77,13 @@ class ParamShiftEstimatorGradient(BaseEstimatorGradient):
         observables: Sequence[BaseOperator],
         parameter_values: Sequence[Sequence[float]],
         parameters: Sequence[Sequence[Parameter]],
-        *,
-        precision: float | Sequence[float] | None,
+        **options,
     ) -> EstimatorGradientResult:
         """Compute the estimator gradients on the given circuits."""
-        has_transformed_precision = False
-
-        if isinstance(precision, float) or precision is None:
-            precision = [precision] * len(circuits)
-            has_transformed_precision = True
-
-        metadata = []
-        pubs = []
-
-        if not (
-            len(circuits)
-            == len(observables)
-            == len(parameters)
-            == len(parameter_values)
-            == len(precision)
-        ):
-            raise ValueError(
-                f"circuits, observables, parameters, parameter_values and precision must have the same"
-                f"length, but have respective lengths {len(circuits)},  {len(observables)}, "
-                f"{len(parameters)}, {len(parameter_values)} and {len(precision)}."
-            )
-
-        for circuit, observable, parameter_values_, parameters_, precision_ in zip(
-            circuits, observables, parameter_values, parameters, precision
+        job_circuits, job_observables, job_param_values, metadata = [], [], [], []
+        all_n = []
+        for circuit, observable, parameter_values_, parameters_ in zip(
+            circuits, observables, parameter_values, parameters
         ):
             metadata.append({"parameters": parameters_})
             # Make parameter values for the parameter shift rule.
@@ -120,10 +91,19 @@ class ParamShiftEstimatorGradient(BaseEstimatorGradient):
                 circuit, parameter_values_, parameters_
             )
             # Combine inputs into a single job to reduce overhead.
-            pubs.append((circuit, observable, param_shift_parameter_values, precision_))
+            n = len(param_shift_parameter_values)
+            job_circuits.extend([circuit] * n)
+            job_observables.extend([observable] * n)
+            job_param_values.extend(param_shift_parameter_values)
+            all_n.append(n)
 
         # Run the single job with all circuits.
-        job = self._estimator.run(pubs)
+        job = self._estimator.run(
+            job_circuits,
+            job_observables,
+            job_param_values,
+            **options,
+        )
         try:
             results = job.result()
         except Exception as exc:
@@ -131,21 +111,12 @@ class ParamShiftEstimatorGradient(BaseEstimatorGradient):
 
         # Compute the gradients.
         gradients = []
-
-        for result in results:
-            evs = result.data.evs
-            n = evs.shape[0]
-            gradient_ = (evs[: n // 2] - evs[n // 2 :]) / 2
+        partial_sum_n = 0
+        for n in all_n:
+            result = results.values[partial_sum_n : partial_sum_n + n]
+            gradient_ = (result[: n // 2] - result[n // 2 :]) / 2
             gradients.append(gradient_)
+            partial_sum_n += n
 
-        if has_transformed_precision:
-            precision = precision[0]
-
-            if precision is None:
-                precision = results[0].metadata["target_precision"]
-        else:
-            for i, (precision_, result) in enumerate(zip(precision, results)):
-                if precision_ is None:
-                    precision[i] = results[i].metadata["target_precision"]
-
-        return EstimatorGradientResult(gradients=gradients, metadata=metadata, precision=precision)
+        opt = self._get_local_options(options)
+        return EstimatorGradientResult(gradients=gradients, metadata=metadata, options=opt)

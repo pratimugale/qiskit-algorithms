@@ -1,6 +1,6 @@
 # This code is part of a Qiskit project.
 #
-# (C) Copyright IBM 2018, 2025.
+# (C) Copyright IBM 2018, 2023.
 #
 # This code is licensed under the Apache License, Version 2.0. You may
 # obtain a copy of this license in the LICENSE.txt file in the root directory
@@ -13,21 +13,17 @@
 """The Quantum Phase Estimation-based Amplitude Estimation algorithm."""
 
 from __future__ import annotations
-
-import warnings
 from collections import OrderedDict
-from typing import Any
-
+import warnings
 import numpy as np
-from qiskit import QuantumCircuit, ClassicalRegister
-from qiskit.primitives import BaseSamplerV2, StatevectorSampler
-from scipy.optimize import bisect
 from scipy.stats import chi2, norm
+from scipy.optimize import bisect
 
-from .ae_utils import pdf_a, derivative_log_pdf_a, bisect_max
+from qiskit import QuantumCircuit, ClassicalRegister
+from qiskit.primitives import BaseSampler, Sampler
 from .amplitude_estimator import AmplitudeEstimator, AmplitudeEstimatorResult
+from .ae_utils import pdf_a, derivative_log_pdf_a, bisect_max
 from .estimation_problem import EstimationProblem
-from ..custom_types import Transpiler
 from ..exceptions import AlgorithmError
 
 
@@ -70,10 +66,7 @@ class AmplitudeEstimation(AmplitudeEstimator):
         num_eval_qubits: int,
         phase_estimation_circuit: QuantumCircuit | None = None,
         iqft: QuantumCircuit | None = None,
-        sampler: BaseSamplerV2 | None = None,
-        *,
-        transpiler: Transpiler | None = None,
-        transpiler_options: dict[str, Any] | None = None,
+        sampler: BaseSampler | None = None,
     ) -> None:
         r"""
         Args:
@@ -84,10 +77,6 @@ class AmplitudeEstimation(AmplitudeEstimator):
             iqft: The inverse quantum Fourier transform component, defaults to using a standard
                 implementation from `qiskit.circuit.library.QFT` when None.
             sampler: A sampler primitive to evaluate the circuits.
-            transpiler: An optional object with a `run` method allowing to transpile the circuits
-                that are produced within this algorithm. If set to `None`, these won't be transpiled.
-            transpiler_options: A dictionary of options to be passed to the transpiler's `run`
-                method as keyword arguments.
 
         Raises:
             ValueError: If the number of evaluation qubits is smaller than 1.
@@ -105,11 +94,8 @@ class AmplitudeEstimation(AmplitudeEstimator):
         self._pec = phase_estimation_circuit
         self._sampler = sampler
 
-        self._transpiler = transpiler
-        self._transpiler_options = transpiler_options if transpiler_options else {}
-
     @property
-    def sampler(self) -> BaseSamplerV2 | None:
+    def sampler(self) -> BaseSampler | None:
         """Get the sampler primitive.
 
         Returns:
@@ -118,7 +104,7 @@ class AmplitudeEstimation(AmplitudeEstimator):
         return self._sampler
 
     @sampler.setter
-    def sampler(self, sampler: BaseSamplerV2) -> None:
+    def sampler(self, sampler: BaseSampler) -> None:
         """Set sampler primitive.
 
         Args:
@@ -162,9 +148,6 @@ class AmplitudeEstimation(AmplitudeEstimator):
             cr = ClassicalRegister(self._m)
             circuit.add_register(cr)
             circuit.measure(list(range(self._m)), list(range(self._m)))
-
-        if self._transpiler is not None:
-            circuit = self._transpiler.run(circuit, **self._transpiler_options)
 
         return circuit
 
@@ -305,10 +288,8 @@ class AmplitudeEstimation(AmplitudeEstimator):
                 "The state_preparation property of the estimation problem must be set."
             )
         if self._sampler is None:
-            warnings.warn(
-                "No sampler provided, defaulting to StatevectorSampler from qiskit.primitives"
-            )
-            self._sampler = StatevectorSampler()
+            warnings.warn("No sampler provided, defaulting to Sampler from qiskit.primitives")
+            self._sampler = Sampler()
 
         if estimation_problem.objective_qubits is None:
             raise ValueError("The objective_qubits property of the estimation problem must be set.")
@@ -326,17 +307,23 @@ class AmplitudeEstimation(AmplitudeEstimator):
         result.post_processing = estimation_problem.post_processing  # type: ignore[assignment]
 
         circuit = self.construct_circuit(estimation_problem, measurement=True)
-
         try:
-            job = self._sampler.run([(circuit,)])
-            ret = job.result()[0]
+            job = self._sampler.run([circuit])
+            ret = job.result()
         except Exception as exc:
             raise AlgorithmError("The job was not completed successfully. ") from exc
 
-        circuit_results = getattr(ret.data, next(iter(ret.data.keys())))
-        shots = ret.metadata["shots"]
+        shots = ret.metadata[0].get("shots")
+        exact = True
 
-        result.circuit_results = circuit_results.get_counts()
+        if shots is None:
+            result.circuit_results = ret.quasi_dists[0].binary_probabilities()
+            shots = 1
+        else:
+            result.circuit_results = {
+                k: round(v * shots) for k, v in ret.quasi_dists[0].binary_probabilities().items()
+            }
+            exact = False
 
         # store shots
         result.shots = shots
@@ -369,7 +356,7 @@ class AmplitudeEstimation(AmplitudeEstimator):
             mle  # type: ignore[assignment,arg-type]
         )
 
-        result.confidence_interval = self.compute_confidence_interval(result)
+        result.confidence_interval = self.compute_confidence_interval(result, exact=exact)
         result.confidence_interval_processed = tuple(
             estimation_problem.post_processing(value)  # type: ignore[assignment,arg-type]
             for value in result.confidence_interval
@@ -382,6 +369,7 @@ class AmplitudeEstimation(AmplitudeEstimator):
         result: "AmplitudeEstimationResult",
         alpha: float = 0.05,
         kind: str = "likelihood_ratio",
+        exact: bool = False,
     ) -> tuple[float, float]:
         """Compute the (1 - alpha) confidence interval.
 
@@ -390,6 +378,7 @@ class AmplitudeEstimation(AmplitudeEstimator):
             alpha: Confidence level: compute the (1 - alpha) confidence interval.
             kind: The method to compute the confidence interval, can be 'fisher', 'observed_fisher'
                 or 'likelihood_ratio' (default)
+            exact: Whether the result comes from a statevector simulation or not
 
         Returns:
             The (1 - alpha) confidence interval of the specified kind.
@@ -397,6 +386,9 @@ class AmplitudeEstimation(AmplitudeEstimator):
         Raises:
             NotImplementedError: If the confidence interval method `kind` is not implemented.
         """
+        # if statevector simulator the estimate is exact
+        if exact:
+            return (result.mle, result.mle)
 
         if kind in ["likelihood_ratio", "lr"]:
             return _likelihood_ratio_confint(result, alpha)

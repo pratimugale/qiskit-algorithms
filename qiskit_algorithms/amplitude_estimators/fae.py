@@ -1,6 +1,6 @@
 # This code is part of a Qiskit project.
 #
-# (C) Copyright IBM 2017, 2025.
+# (C) Copyright IBM 2017, 2024.
 #
 # This code is licensed under the Apache License, Version 2.0. You may
 # obtain a copy of this license in the LICENSE.txt file in the root directory
@@ -13,17 +13,16 @@
 """Faster Amplitude Estimation."""
 
 from __future__ import annotations
-from typing import cast, Tuple, Any
+from typing import cast, Tuple
 import warnings
 import numpy as np
 
 from qiskit.circuit import QuantumCircuit, ClassicalRegister
-from qiskit.primitives import BaseSamplerV2, StatevectorSampler
+from qiskit.primitives import BaseSampler, Sampler
 from qiskit_algorithms.exceptions import AlgorithmError
 
 from .amplitude_estimator import AmplitudeEstimator, AmplitudeEstimatorResult
 from .estimation_problem import EstimationProblem
-from ..custom_types import Transpiler
 
 
 class FasterAmplitudeEstimation(AmplitudeEstimator):
@@ -52,10 +51,7 @@ class FasterAmplitudeEstimation(AmplitudeEstimator):
         delta: float,
         maxiter: int,
         rescale: bool = True,
-        sampler: BaseSamplerV2 | None = None,
-        *,
-        transpiler: Transpiler | None = None,
-        transpiler_options: dict[str, Any] | None = None,
+        sampler: BaseSampler | None = None,
     ) -> None:
         r"""
         Args:
@@ -63,10 +59,6 @@ class FasterAmplitudeEstimation(AmplitudeEstimator):
             maxiter: The number of iterations, the maximal power of Q is `2 ** (maxiter - 1)`.
             rescale: Whether to rescale the problem passed to `estimate`.
             sampler: A sampler primitive to evaluate the circuits.
-            transpiler: An optional object with a `run` method allowing to transpile the circuits
-                that are produced within this algorithm. If set to `None`, these won't be transpiled.
-            transpiler_options: A dictionary of options to be passed to the transpiler's `run`
-                method as keyword arguments.
 
         """
         super().__init__()
@@ -76,11 +68,9 @@ class FasterAmplitudeEstimation(AmplitudeEstimator):
         self._maxiter = maxiter
         self._num_oracle_calls = 0
         self._sampler = sampler
-        self._transpiler = transpiler
-        self._transpiler_options = transpiler_options if transpiler_options is not None else {}
 
     @property
-    def sampler(self) -> BaseSamplerV2 | None:
+    def sampler(self) -> BaseSampler | None:
         """Get the sampler primitive.
 
         Returns:
@@ -89,7 +79,7 @@ class FasterAmplitudeEstimation(AmplitudeEstimator):
         return self._sampler
 
     @sampler.setter
-    def sampler(self, sampler: BaseSamplerV2) -> None:
+    def sampler(self, sampler: BaseSampler) -> None:
         """Set sampler primitive.
 
         Args:
@@ -100,31 +90,27 @@ class FasterAmplitudeEstimation(AmplitudeEstimator):
     def _cos_estimate(self, estimation_problem, k, shots):
 
         if self._sampler is None:
-            warnings.warn(
-                "No sampler provided, defaulting to StatevectorSampler from qiskit.primitives"
-            )
-            self._sampler = StatevectorSampler()
+            warnings.warn("No sampler provided, defaulting to Sampler from qiskit.primitives")
+            self._sampler = Sampler()
 
         circuit = self.construct_circuit(estimation_problem, k, measurement=True)
 
         try:
-            pub = (circuit, None, shots)
-            job = self._sampler.run([pub])
-            result = job.result()[0]
+            job = self._sampler.run([circuit], shots=shots)
+            result = job.result()
         except Exception as exc:
             raise AlgorithmError("The job was not completed successfully. ") from exc
 
-        circuit_results = getattr(result.data, next(iter(result.data.keys())))
-        shots = result.metadata["shots"]
-
+        if shots is None:
+            shots = 1
         self._num_oracle_calls += (2 * k + 1) * shots
 
         # sum over all probabilities where the objective qubits are 1
         prob = 0
-        for bit, value in circuit_results.get_counts().items():
+        for bit, probabilities in result.quasi_dists[0].binary_probabilities().items():
             # check if it is a good state
             if estimation_problem.is_good_state(bit):
-                prob += value / shots
+                prob += probabilities
 
         cos_estimate = 1 - 2 * prob
 
@@ -177,9 +163,6 @@ class FasterAmplitudeEstimation(AmplitudeEstimator):
             circuit.barrier()
             circuit.measure(estimation_problem.objective_qubits, c[:])
 
-        if self._transpiler is not None:
-            circuit = self._transpiler.run(circuit, **self._transpiler_options)
-
         return circuit
 
     def estimate(self, estimation_problem: EstimationProblem) -> "FasterAmplitudeEstimationResult":
@@ -195,10 +178,8 @@ class FasterAmplitudeEstimation(AmplitudeEstimator):
             AlgorithmError: Sampler run error.
         """
         if self._sampler is None:
-            warnings.warn(
-                "No sampler provided, defaulting to StatevectorSampler from qiskit.primitives"
-            )
-            self._sampler = StatevectorSampler()
+            warnings.warn("No sampler provided, defaulting to Sampler from qiskit.primitives")
+            self._sampler = Sampler()
 
         self._num_oracle_calls = 0
 

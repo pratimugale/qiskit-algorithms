@@ -1,6 +1,6 @@
 # This code is part of a Qiskit project.
 #
-# (C) Copyright IBM 2022, 2025.
+# (C) Copyright IBM 2022, 2024.
 #
 # This code is licensed under the Apache License, Version 2.0. You may
 # obtain a copy of this license in the LICENSE.txt file in the root directory
@@ -22,7 +22,7 @@ from typing import Any
 import numpy as np
 
 from qiskit.circuit import QuantumCircuit
-from qiskit.primitives import BaseSamplerV2
+from qiskit.primitives import BaseSampler
 from qiskit.result import QuasiDistribution
 from qiskit.quantum_info.operators.base_operator import BaseOperator
 
@@ -92,7 +92,7 @@ class SamplingVQE(VariationalAlgorithm, SamplingMinimumEigensolver):
     the ``SamplingVQE`` object has been constructed.
 
     Attributes:
-        sampler (BaseSamplerV2): The sampler primitive to sample the circuits.
+        sampler (BaseSampler): The sampler primitive to sample the circuits.
         ansatz (QuantumCircuit): A parameterized quantum circuit to prepare the trial state.
         optimizer (Optimizer | Minimizer): A classical optimizer to find the minimum energy. This
             can either be an :class:`.Optimizer` or a callable implementing the
@@ -116,7 +116,7 @@ class SamplingVQE(VariationalAlgorithm, SamplingMinimumEigensolver):
 
     def __init__(
         self,
-        sampler: BaseSamplerV2,
+        sampler: BaseSampler,
         ansatz: QuantumCircuit,
         optimizer: Optimizer | Minimizer,
         *,
@@ -240,12 +240,7 @@ class SamplingVQE(VariationalAlgorithm, SamplingMinimumEigensolver):
             optimizer_result.x,
         )
 
-        final_res = self.sampler.run([(self.ansatz, optimizer_result.x)]).result()
-        final_state = getattr(final_res[0].data, self.ansatz.cregs[0].name)
-        final_state = {
-            label: value / final_state.num_shots
-            for label, value in final_state.get_counts().items()
-        }
+        final_state = self.sampler.run([self.ansatz], [optimizer_result.x]).result().quasi_dists[0]
 
         if aux_operators is not None:
             aux_operators_evaluated = estimate_observables(
@@ -319,16 +314,18 @@ class SamplingVQE(VariationalAlgorithm, SamplingMinimumEigensolver):
             nonlocal eval_count
             # handle broadcasting: ensure parameters is of shape [array, array, ...]
             parameters = np.reshape(parameters, (-1, num_parameters)).tolist()
-            job = estimator.run([(ansatz, operator, parameters)])
-            estimator_result = job.result()[0]
-            values = estimator_result.data.evs
-            if not values.shape:
-                values = values.reshape(1)
+            batch_size = len(parameters)
+
+            estimator_result = estimator.run(
+                batch_size * [ansatz], batch_size * [operator], parameters
+            ).result()
+            values = estimator_result.values
 
             if self.callback is not None:
-                for params, value in zip(parameters, values):
+                metadata = estimator_result.metadata
+                for params, value, meta in zip(parameters, values, metadata):
                     eval_count += 1
-                    self.callback(eval_count, params, value, estimator_result.metadata)
+                    self.callback(eval_count, params, value, meta)
 
             result = values if len(values) > 1 else values[0]
             return np.real(result)

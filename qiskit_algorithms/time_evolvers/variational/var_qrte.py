@@ -1,6 +1,6 @@
 # This code is part of a Qiskit project.
 #
-# (C) Copyright IBM 2023, 2025.
+# (C) Copyright IBM 2023, 2024.
 #
 # This code is licensed under the Apache License, Version 2.0. You may
 # obtain a copy of this license in the LICENSE.txt file in the root directory
@@ -14,14 +14,14 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Type, Callable, Any
+from typing import Type, Callable
 
 import numpy as np
 from scipy.integrate import OdeSolver
 
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
-from qiskit.primitives import BaseEstimatorV2
+from qiskit.primitives import BaseEstimatorV2 # change: BaseEstimator is migrated to BaseEstimatorV2
 
 from .solvers.ode.forward_euler_solver import ForwardEulerSolver
 
@@ -29,8 +29,6 @@ from .variational_principles import RealVariationalPrinciple, RealMcLachlanPrinc
 from .var_qte import VarQTE
 
 from ..real_time_evolver import RealTimeEvolver
-from ...custom_types import Transpiler
-
 
 class VarQRTE(VarQTE, RealTimeEvolver):
     """Variational Quantum Real Time Evolution algorithm.
@@ -44,7 +42,7 @@ class VarQRTE(VarQTE, RealTimeEvolver):
         from qiskit_algorithms.time_evolvers.variational import RealMcLachlanPrinciple
         from qiskit.quantum_info import SparsePauliOp
         from qiskit.quantum_info import SparsePauliOp, Pauli
-        from qiskit.primitives import StatevectorEstimator
+        from qiskit.primitives import Estimator
 
         observable = SparsePauliOp.from_list(
             [
@@ -70,7 +68,7 @@ class VarQRTE(VarQTE, RealTimeEvolver):
         # evaluating auxiliary operators
         aux_ops = [Pauli("XX"), Pauli("YZ")]
         evolution_problem = TimeEvolutionProblem(observable, time, aux_operators=aux_ops)
-        var_qrte = VarQRTE(ansatz, init_param_values, var_principle, StatevectorEstimator())
+        var_qrte = VarQRTE(ansatz, init_param_values, var_principle, Estimator())
         evolution_result = var_qrte.evolve(evolution_problem)
     """
 
@@ -80,15 +78,12 @@ class VarQRTE(VarQTE, RealTimeEvolver):
         ansatz: QuantumCircuit,
         initial_parameters: Mapping[Parameter, float] | Sequence[float],
         variational_principle: RealVariationalPrinciple | None = None,
-        estimator: BaseEstimatorV2 | None = None,
+        estimator: BaseEstimatorV2 | None = None, # change: BaseEstimator is migrated to BaseEstimatorV2
         ode_solver: Type[OdeSolver] | str = ForwardEulerSolver,
         lse_solver: Callable[[np.ndarray, np.ndarray], np.ndarray] | None = None,
         num_timesteps: int | None = None,
         imag_part_tol: float = 1e-7,
         num_instability_tol: float = 1e-7,
-        *,
-        transpiler: Transpiler | None = None,
-        transpiler_options: dict[str, Any] | None = None,
     ) -> None:
         r"""
         Args:
@@ -111,11 +106,6 @@ class VarQRTE(VarQTE, RealTimeEvolver):
             num_instability_tol: The amount of negative value that is allowed to be
                 rounded up to 0 for quantities that are expected to be
                 non-negative.
-            transpiler: An optional object with a `run` method allowing to transpile the circuits
-                that are run when using this algorithm. If set to `None`, these won't be
-                transpiled.
-            transpiler_options: A dictionary of options to be passed to the transpiler's `run`
-                method as keyword arguments.
         """
         if variational_principle is None:
             variational_principle = RealMcLachlanPrinciple()
@@ -129,6 +119,4 @@ class VarQRTE(VarQTE, RealTimeEvolver):
             num_timesteps=num_timesteps,
             imag_part_tol=imag_part_tol,
             num_instability_tol=num_instability_tol,
-            transpiler=transpiler,
-            transpiler_options=transpiler_options,
         )

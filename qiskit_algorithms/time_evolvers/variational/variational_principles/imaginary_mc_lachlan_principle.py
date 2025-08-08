@@ -1,6 +1,6 @@
 # This code is part of a Qiskit project.
 #
-# (C) Copyright IBM 2023, 2025.
+# (C) Copyright IBM 2023.
 #
 # This code is licensed under the Apache License, Version 2.0. You may
 # obtain a copy of this license in the LICENSE.txt file in the root directory
@@ -21,7 +21,7 @@ import numpy as np
 
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
-from qiskit.primitives import StatevectorEstimator
+from qiskit.primitives import StatevectorEstimator # change: Estimator is migrated to StatevectorEstimator
 from qiskit.quantum_info.operators.base_operator import BaseOperator
 
 from .imaginary_variational_principle import ImaginaryVariationalPrinciple
@@ -34,7 +34,6 @@ from ....gradients import (
     LinCombQGT,
     LinCombEstimatorGradient,
 )
-
 
 class ImaginaryMcLachlanPrinciple(ImaginaryVariationalPrinciple):
     """Class for an Imaginary McLachlan's Variational Principle. It aims to minimize the distance
@@ -69,7 +68,7 @@ class ImaginaryMcLachlanPrinciple(ImaginaryVariationalPrinciple):
                     "The provided gradient instance does not contain an estimator primitive."
                 ) from exc
         else:
-            estimator = StatevectorEstimator()
+            estimator = StatevectorEstimator() # change: Estimator is migrated to StatevectorEstimator
             gradient = LinCombEstimatorGradient(estimator)
 
         if qgt is None:

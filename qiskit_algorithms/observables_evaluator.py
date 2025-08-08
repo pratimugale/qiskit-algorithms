@@ -1,6 +1,6 @@
 # This code is part of a Qiskit project.
 #
-# (C) Copyright IBM 2021, 2025.
+# (C) Copyright IBM 2021, 2023.
 #
 # This code is licensed under the Apache License, Version 2.0. You may
 # obtain a copy of this license in the LICENSE.txt file in the root directory
@@ -19,17 +19,15 @@ from typing import Any
 import numpy as np
 
 from qiskit import QuantumCircuit
-from qiskit.primitives import BaseEstimatorV2
 from qiskit.quantum_info import SparsePauliOp
+from qiskit.primitives import BaseEstimatorV2  # change: BaseEstimator migrated to BaseEstimatorV2
 from qiskit.quantum_info.operators.base_operator import BaseOperator
 
 from .exceptions import AlgorithmError
 from .list_or_dict import ListOrDict
 
-
-# TODO: make estimate_observables accept EstimatorPubLike inputs
 def estimate_observables(
-    estimator: BaseEstimatorV2,
+    estimator: BaseEstimatorV2,  # change: BaseEstimator migrated to BaseEstimatorV2
     quantum_state: QuantumCircuit,
     observables: ListOrDict[BaseOperator],
     parameter_values: Sequence[float] | None = None,
@@ -43,7 +41,7 @@ def estimate_observables(
     Args:
         estimator: An estimator primitive used for calculations.
         quantum_state: A (parameterized) quantum circuit preparing a quantum state that expectation
-            values are computed against. It is expected to be an ISA circuit.
+            values are computed against.
         observables: A list or a dictionary of operators whose expectation values are to be
             calculated.
         parameter_values: Optional list of parameters values to evaluate the quantum circuit on.
@@ -63,55 +61,38 @@ def estimate_observables(
         observables_list = observables
 
     if len(observables_list) > 0:
-        observables_list, mask = _handle_zero_ops(observables_list)
-        parameter_values_: Sequence[float] | None = parameter_values
+        observables_list = _handle_zero_ops(observables_list)
+        quantum_state = [quantum_state] * len(observables)
+        parameter_values_: Sequence[float] | Sequence[Sequence[float]] | None = parameter_values
+        if parameter_values is not None:
+            parameter_values_ = [parameter_values] * len(observables)
         try:
-            estimator_job = estimator.run([(quantum_state, observables_list, parameter_values_)])
-            estimator_result = estimator_job.result()[0]
-            expectation_values = estimator_result.data.evs
+            estimator_job = estimator.run(quantum_state, observables_list, parameter_values_)
+            expectation_values = estimator_job.result().values
         except Exception as exc:
             raise AlgorithmError("The primitive job failed!") from exc
 
-        metadata = estimator_result.metadata
+        metadata = estimator_job.result().metadata
         # Discard values below threshold
         observables_means = expectation_values * (np.abs(expectation_values) > threshold)
-        # Adding back the values from the nil observables
-        all_means = []
-        index = 0
-        for mask_value in mask:
-            # Non-zero observable
-            if mask_value:
-                all_means.append(observables_means[index])
-                index += 1
-            else:
-                all_means.append(0.0)
         # zip means and metadata into tuples
-        observables_results = list(zip(np.array(all_means), [metadata] * len(all_means)))
+        observables_results = list(zip(observables_means, metadata))
     else:
         observables_results = []
 
     return _prepare_result(observables_results, observables)
 
-
 def _handle_zero_ops(
     observables_list: list[BaseOperator],
-) -> tuple[list[BaseOperator], list[bool]]:
-    """Returns the initial list of operators with the nil ones having been removed. Furthermore, returns
-    a mask indicating which operators were kept."""
-    mask: list[bool] = []
-    purged_list: list[BaseOperator] = []
-
+) -> list[BaseOperator]:
+    """Replaces all occurrence of operators equal to 0 in the list with an equivalent ``SparsePauliOp``
+    operator."""
     if observables_list:
-        for observable in observables_list:
-            if observable == 0 or (
-                isinstance(observable, SparsePauliOp) and not observable.simplify().coeffs.any()
-            ):
-                mask.append(False)
-            else:
-                mask.append(True)
-                purged_list.append(observable)
-    return purged_list, mask
-
+        zero_op = SparsePauliOp.from_list([("I" * observables_list[0].num_qubits, 0)])
+        for ind, observable in enumerate(observables_list):
+            if observable == 0:
+                observables_list[ind] = zero_op
+    return observables_list
 
 def _prepare_result(
     observables_results: list[tuple[float, dict]],
